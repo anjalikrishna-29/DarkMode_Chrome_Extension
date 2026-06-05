@@ -13,7 +13,7 @@ const DEFAULTS = {
 
 // Initialize settings on install
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.sync.get(Object.keys(DEFAULTS), (res) => {
+  chrome.storage.local.get(Object.keys(DEFAULTS), (res) => {
     const initSettings = {};
     for (let key in DEFAULTS) {
       if (res[key] === undefined) {
@@ -21,7 +21,7 @@ chrome.runtime.onInstalled.addListener(() => {
       }
     }
     if (Object.keys(initSettings).length > 0) {
-      chrome.storage.sync.set(initSettings);
+      chrome.storage.local.set(initSettings);
     }
 
     // Set initial badge status
@@ -44,9 +44,9 @@ chrome.runtime.onInstalled.addListener(() => {
 // Handle command shortcuts (Alt+Shift+D)
 chrome.commands.onCommand.addListener((command) => {
   if (command === "toggle-dark-mode") {
-    chrome.storage.sync.get("enabled", (data) => {
+    chrome.storage.local.get("enabled", (data) => {
       const nextState = !data.enabled;
-      chrome.storage.sync.set({ enabled: nextState }, () => {
+      chrome.storage.local.set({ enabled: nextState }, () => {
         updateBadge(nextState);
       });
     });
@@ -62,8 +62,8 @@ function updateBadge(enabled) {
 }
 
 // Keep badge synced on storage changes
-chrome.storage.onChanged.addListener((changes) => {
-  if (changes.enabled) {
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local' && changes.enabled) {
     updateBadge(changes.enabled.newValue);
   }
 });
@@ -77,7 +77,7 @@ if (chrome.contextMenus) {
         const hostname = url.hostname;
         if (!hostname) return;
 
-        chrome.storage.sync.get(["siteSettings"], (data) => {
+        chrome.storage.local.get(["siteSettings"], (data) => {
           const siteSettings = data.siteSettings || {};
           const currentSetting = siteSettings[hostname];
 
@@ -90,7 +90,7 @@ if (chrome.contextMenus) {
             siteSettings[hostname] = false;
           }
 
-          chrome.storage.sync.set({ siteSettings }, () => {
+          chrome.storage.local.set({ siteSettings }, () => {
             // Reload tab to apply or run scripting injection
             if (tab.id) {
               chrome.tabs.reload(tab.id);
