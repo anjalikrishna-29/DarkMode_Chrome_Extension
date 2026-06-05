@@ -1,5 +1,4 @@
 (function () {
-  let styleEl = null;
   let settings = {
     enabled: true,
     theme: 'charcoal',
@@ -20,18 +19,27 @@
   init();
 
   function init() {
-    // Load settings from storage
-    chrome.storage.sync.get(settings, (data) => {
+    // Load settings from local storage
+    chrome.storage.local.get(settings, (data) => {
       settings = { ...settings, ...data };
       applyDarkMode();
+      // Start observer on HTML tag to protect our classes/styles from inline script overrides
+      startHTMLObserver();
     });
 
-    // Listen for changes from storage (sent by popup)
-    chrome.storage.onChanged.addListener((changes) => {
+    // Listen for changes from local storage (sent by popup)
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local') return;
+      let changed = false;
       for (let key in changes) {
-        settings[key] = changes[key].newValue;
+        if (settings[key] !== undefined) {
+          settings[key] = changes[key].newValue;
+          changed = true;
+        }
       }
-      applyDarkMode();
+      if (changed) {
+        applyDarkMode();
+      }
     });
 
     // Watch for DOM changes to mark background images
@@ -89,20 +97,42 @@
     }
   }
 
+  // Detects if the website already has a native dark theme (to prevent double-inverting)
+  function isPageAlreadyDark() {
+    const body = document.body;
+    if (!body) return false;
+
+    const bodyBg = window.getComputedStyle(body).backgroundColor;
+    if (!bodyBg || bodyBg === 'rgba(0, 0, 0, 0)' || bodyBg === 'transparent') {
+      const htmlBg = window.getComputedStyle(document.documentElement).backgroundColor;
+      if (!htmlBg || htmlBg === 'rgba(0, 0, 0, 0)' || htmlBg === 'transparent') {
+        return false;
+      }
+      return checkColorDarkness(htmlBg);
+    }
+    return checkColorDarkness(bodyBg);
+  }
+
+  function checkColorDarkness(colorStr) {
+    const match = colorStr.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (match) {
+      const r = parseInt(match[1]);
+      const g = parseInt(match[2]);
+      const b = parseInt(match[3]);
+      // Calculate YIQ brightness
+      const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+      return yiq < 120; // If brightness < 120, the page background is already dark
+    }
+    return false;
+  }
+
   function applyDarkMode() {
     const active = shouldBeActive();
 
-    if (!active) {
+    // Prevent inverting already dark pages
+    if (!active || isPageAlreadyDark()) {
       removeStyles();
       return;
-    }
-
-    // Prepare style element
-    if (!styleEl) {
-      styleEl = document.createElement('style');
-      styleEl.id = 'novadark-theme-style';
-      // Attempt to append as early as possible
-      (document.head || document.documentElement).appendChild(styleEl);
     }
 
     // Set variable updates
@@ -124,64 +154,59 @@
       overlayBg = 'rgba(10, 25, 50, 0.08)'; // Subtly inject dark navy tint
     }
 
-    // Dynamic style definitions
-    const cssRules = `
-      html {
-        filter: invert(${filterInvert})
-                hue-rotate(${filterHue})
-                brightness(${filterBrightness})
-                contrast(${filterContrast})
-                sepia(${filterSepia}) !important;
-        background-color: #ffffff !important;
-      }
-
-      /* Re-invert media components to keep colors normal */
-      img, video, canvas, iframe,
-      svg:not([role="presentation"]):not([class*="icon"]):not([id*="logo"]),
-      [style*="background-image"],
-      .novadark-bg-img {
-        filter: invert(${filterInvert}) hue-rotate(-${filterHue}) !important;
-      }
-
-      /* Ensure overlays or fixed background visuals aren't completely broken */
-      html::after {
-        content: "";
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100vw;
-        height: 100vh;
-        background: ${overlayBg};
-        pointer-events: none;
-        z-index: 2147483647;
-      }
-
-      /* Prevent flash transitions */
-      html:not(:defined), html:not([class]) {
-        background-color: #121212 !important;
-      }
-      
-      /* Specific override for PDF viewer and print */
-      @media print {
-        html {
-          filter: none !important;
-        }
-      }
-    `;
-
-    styleEl.textContent = cssRules;
+    const doc = document.documentElement;
+    if (doc) {
+      doc.classList.add('novadark-active');
+      doc.style.setProperty('--novadark-invert', filterInvert);
+      doc.style.setProperty('--novadark-hue', filterHue);
+      doc.style.setProperty('--novadark-revert-hue', '-' + filterHue);
+      doc.style.setProperty('--novadark-brightness', filterBrightness);
+      doc.style.setProperty('--novadark-contrast', filterContrast);
+      doc.style.setProperty('--novadark-sepia', filterSepia);
+      doc.style.setProperty('--novadark-overlay-bg', overlayBg);
+    }
   }
 
   function removeStyles() {
-    if (styleEl && styleEl.parentNode) {
-      styleEl.parentNode.removeChild(styleEl);
-      styleEl = null;
+    const doc = document.documentElement;
+    if (doc) {
+      doc.classList.remove('novadark-active');
+      doc.style.removeProperty('--novadark-invert');
+      doc.style.removeProperty('--novadark-hue');
+      doc.style.removeProperty('--novadark-revert-hue');
+      doc.style.removeProperty('--novadark-brightness');
+      doc.style.removeProperty('--novadark-contrast');
+      doc.style.removeProperty('--novadark-sepia');
+      doc.style.removeProperty('--novadark-overlay-bg');
+    }
+  }
+
+  // HTML observer to prevent inline page scripts from clearing classes/styles
+  let htmlObserver = null;
+  function startHTMLObserver() {
+    htmlObserver = new MutationObserver(() => {
+      htmlObserver.disconnect();
+      applyDarkMode();
+      observeHTML();
+    });
+    observeHTML();
+  }
+
+  function observeHTML() {
+    if (htmlObserver && document.documentElement) {
+      htmlObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style']
+      });
     }
   }
 
   // Monitor DOM for elements with background images dynamically styled
   let observer = null;
   function startImageObserver() {
+    // Re-evaluate dark mode now that the body is available (checks isPageAlreadyDark)
+    applyDarkMode();
+
     // Initial scan
     scanBackgroundImages();
 
